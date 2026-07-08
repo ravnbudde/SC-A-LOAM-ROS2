@@ -1,14 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>aloam_velodyne</name>
-  <version>0.0.0</version>
+  <version>0.1.0</version>
 
-  <description>
-    This is an advanced implentation of LOAM.
-    LOAM is described in the following paper:
-    J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
-      Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
-  </description>
+  <description>ROS 2 Scan Context pose graph optimization node for LiDAR odometry front-ends such as Fast-LIO.</description>
 
   <maintainer email="qintonguav@gmail.com">qintong</maintainer>
   <license>BSD</license>
@@ -20,14 +15,10 @@
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>image_transport</depend>
-  <depend>cv_bridge</depend>
   <depend>pcl_conversions</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
-  <depend>rosbag2_cpp</depend>
 
   <exec_depend>rviz2</exec_depend>
 

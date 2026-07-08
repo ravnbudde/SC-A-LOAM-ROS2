@@ -1,103 +1,77 @@
-# SC-A-LOAM
+# SC-PGO ROS 2
 
-## News
-- ``2021-07-16``: This repository's easy-to-use plug-and-play loop detection and pose graph optimization module (named [SC-PGO](https://github.com/gisbi-kim/SC-A-LOAM/blob/main/src/laserPosegraphOptimization.cpp)) is also integrated with FAST-LIO2! see [FAST_LIO_SLAM](https://github.com/gisbi-kim/FAST_LIO_SLAM).
+This branch is a trimmed ROS 2 package that keeps only the Scan Context pose graph optimization node from SC-A-LOAM. It is intended to run behind an external odometry front-end such as Fast-LIO.
 
-## What is SC-A-LOAM? 
-- A real-time LiDAR SLAM package that integrates A-LOAM and ScanContext. 
-    - **A-LOAM** for odometry (i.e., consecutive motion estimation)
-    - **ScanContext** for coarse global localization that can deal with big drifts (i.e., place recognition as kidnapped robot problem without initial pose)
-    - and iSAM2 of GTSAM is used for pose-graph optimization. 
-- This package aims to show ScanContext's handy applicability. 
-    - The only things a user should do is just to include `Scancontext.h`, call `makeAndSaveScancontextAndKeys` and `detectLoopClosureID`. 
+## What is included
 
-## Features 
-1.  A strong place recognition and loop closing 
-    - We integrated ScanContext as a loop detector into A-LOAM, and ISAM2-based pose-graph optimization is followed. (see https://youtu.be/okML_zNadhY?t=313 to enjoy the drift-closing moment)
-2. A modular implementation 
-    - The only difference from A-LOAM is the addition of the `laserPosegraphOptimization.cpp` file. In the new file, we subscribe the point cloud topic and odometry topic (as a result of A-LOAM, published from `laserMapping.cpp`). That is, our implementation is generic to any front-end odometry methods. Thus, our pose-graph optimization module (i.e., `laserPosegraphOptimization.cpp`) can easily be integrated with any odometry algorithms such as non-LOAM family or even other sensors (e.g., visual odometry).  
-    - <p align="center"><img src="picture/anypipe.png" width=800></p>
-3. (optional) Altitude stabilization using consumer-level GPS  
-    - To make a result more trustworthy, we supports GPS (consumer-level price, such as U-Blox EVK-7P)-based altitude stabilization. The LOAM family of methods are known to be susceptible to z-errors in outdoors. We used the robust loss for only the altitude term. For the details, see the variable `robustGPSNoise` in the `laserPosegraphOptimization.cpp` file. 
+- `alaserPGO`: Scan Context loop detection, ICP loop constraints, GPS altitude factor, and GTSAM/iSAM2 pose graph optimization.
+- `include/scancontext`: Scan Context descriptor and loop-candidate search.
+- `rviz_cfg/aloam_velodyne.rviz`: RViz visualization config.
+- `utils/python/makeMergedMap.py`: offline Open3D map builder for saved keyframe scans and optimized poses.
+- `launch/sc_pgo_fast_lio.launch.py`: launch file with remaps for Fast-LIO odometry, registered cloud, and optional GNSS.
 
-## Prerequisites (dependencies)
-- We mainly depend on ROS, Ceres (for A-LOAM), and GTSAM (for pose-graph optimization). 
-    - For the details to install the prerequisites, please follow the A-LOAM and LIO-SAM repositiory. 
-- The below examples are done under ROS melodic (ubuntu 18) and GTSAM version 4.x. 
+## Required inputs
 
-## How to use? 
-- First, install the abovementioned dependencies, and follow below lines. 
-```
-    mkdir -p ~/catkin_scaloam_ws/src
-    cd ~/catkin_scaloam_ws/src
-    git clone https://github.com/gisbi-kim/SC-A-LOAM.git
-    cd ../
-    catkin_make
-    source ~/catkin_scaloam_ws/devel/setup.bash
-    roslaunch aloam_velodyne aloam_mulran.launch # for MulRan dataset setting 
+`alaserPGO` subscribes to these internal topic names:
+
+- `/aft_mapped_to_init` (`nav_msgs/msg/Odometry`)
+- `/velodyne_cloud_registered_local` (`sensor_msgs/msg/PointCloud2`)
+- `/gps/fix` (`sensor_msgs/msg/NavSatFix`, optional altitude stabilization)
+
+Use launch remaps to connect those to your front-end topics.
+
+## Build
+
+```bash
+cd /home/lonewolf/temp_ws
+colcon build --packages-select aloam_velodyne
+source install/setup.bash
 ```
 
-## Example Results 
+## Run With Fast-LIO Bag Topics
 
-### Riverside 01, MulRan dataset 
-- The MulRan dataset provides lidar scans (Ouster OS1-64, horizontally mounted, 10Hz) and consumer level gps (U-Blox EVK-7P, 4Hz) data.
-    - About how to use (publishing data) data: see here https://github.com/irapkaist/file_player_mulran
-- example videos on Riverside 01 sequence. 
-    1. with consumer level GPS-based altitude stabilization: https://youtu.be/FwAVX5TVm04
-    2. without the z stabilization: https://youtu.be/okML_zNadhY 
-- example result:
+```bash
+ros2 launch aloam_velodyne sc_pgo_fast_lio.launch.py \
+  save_directory:=/home/lonewolf/temp_ws/sc_pgo_out/ \
+  use_sim_time:=true \
+  odom_topic:=/lonewolf/odometry/local \
+  cloud_topic:=/lonewolf/fast_lio/cloud_registered_body \
+  gps_topic:=/lonewolf/vectornav/gnss
+```
 
-<p align="center"><img src="picture/riverside01.png" width=800></p>
+Then play the bag in another terminal:
 
-### KITTI 05 
-- For KITTI (HDL-64 sensor), run using the command 
-    ```
-    roslaunch aloam_velodyne aloam_velodyne_HDL_64.launch # for KITTI dataset setting
-    ```
-- To publish KITTI scans, you can use mini-kitti publisher, a simple python script: https://github.com/gisbi-kim/mini-kitti-publisher
-- example video (no GPS used here): https://youtu.be/hk3Xx8SKkv4
-- example result: 
+```bash
+ros2 bag play /home/lonewolf/temp_ws/fast_lio_bag
+```
 
-<p align="center"><img src="picture/kitti05.png" width=800></p>
+`save_directory` is destructive for `Scans/` and `SCDs/`: the node recreates those subdirectories on startup. Use a fresh output directory for each run you want to keep.
 
-### Indoor
-- ScanContext also works at indoor environments (use smaller sc_max_radius value).
-- example video: https://youtu.be/Uv6_BRmxJho
-- example result: 
-<p align="center"><img src="picture/indoor.png" width=800></p>
+## Outputs
 
-### For Livox LiDAR 
-- Scan Context also works for Livox LiDAR data
-    - In this example, Scan Context is integrated with FAST-LIO (https://github.com/hku-mars/FAST_LIO).
-    - Note: No additional integration effort is required. A user just run seperately FAST-LIO node and SC-A-LOAM's posegraphoptimization.cpp node!
-- example video (tutoial and results): https://youtu.be/Fw9S6D6HozA
-- example result: 
-    <p align="center"><img src="picture/scfastlio.png" width=600></p>
+Published topics:
 
-### For Navtech Radar 
-- Scan Context also works for Navtech Radar data!
-- For the details, please see 
-    - https://github.com/gisbi-kim/navtech-radar-slam
-        - used the pose-graph optimization node of this repository (SC-A-LOAM)
-    - [example video](https://www.youtube.com/watch?v=avtIQ8fesgU&t=128s)
+- `/aft_pgo_odom`
+- `/aft_pgo_path`
+- `/aft_pgo_map`
+- `/loop_scan_local`
+- `/loop_submap_local`
 
-## Utilities
+Saved files:
 
-### Data saver and Map construction 
-- Similar to the [SC-LIO-SAM's saver utility](https://github.com/gisbi-kim/SC-LIO-SAM#applications), we support pose and scan saver per keyframes. Using these saved data, the map (within ROI) can be constructed offline. See the `utils/python/makeMergedMap.py` and [this tutorial](https://youtu.be/jmR3DH_A4Co). 
-- Below is the example results of MulRan dataset KAIST 03's merged map, visualized using CloudCompare ([download the map data here](https://www.dropbox.com/sh/96jrpx3x6hh316j/AACb07kGbocnQWMIpksmU6MQa?dl=0)).  
+- `optimized_poses.txt`
+- `odom_poses.txt`
+- `times.txt`
+- `Scans/*.pcd`
+- `SCDs/*`
 
-    <p align="center"><img src="picture/kaist-03-merged.png" width=800></p>
+## Offline Map Inspection
 
-- A user also can remove dynamic points using these saved keyframe poses and scans. See [this tutorial](https://www.youtube.com/watch?v=UiYYrPMcIRU) and our [Removert project](https://github.com/irapkaist/removert).
+Edit `utils/python/makeMergedMap.py` so `data_dir` points at the SC-PGO output directory, then run it from the utility directory:
 
-## Acknowledgements
-- Thanks to LOAM, A-LOAM, and LIO-SAM code authors. The major codes in this repository are borrowed from their efforts.
+```bash
+cd /home/lonewolf/temp_ws/src/SC-A-LOAM-ROS2/utils/python
+python3 makeMergedMap.py
+```
 
-## Maintainer 
-- please contact me through `paulgkim@kaist.ac.kr` 
-
-## TODO
-- Delayed RS loop closings 
-- SLAM with multi-session localization 
-- More examples on other datasets (KITTI, complex urban dataset, etc.)
+The script stacks saved keyframe scans using `optimized_poses.txt`, opens an Open3D viewer, and saves a merged map PCD in the output directory.
