@@ -124,6 +124,8 @@ bool laserCloudMapPGORedraw = true;
 
 bool useGPS = true;
 std::atomic_bool pgoRunning{false};
+bool pubLoopScan = true;
+bool pubLoopSubmap = true;
 // bool useGPS = false;
 sensor_msgs::msg::NavSatFix::ConstSharedPtr currGPS;
 bool hasGPSforThisKF = false;
@@ -514,16 +516,20 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
     loopFindNearKeyframesCloud(cureKeyframeCloud, _curr_kf_idx, 0, _loop_kf_idx); // use same root of loop kf idx 
     loopFindNearKeyframesCloud(targetKeyframeCloud, _loop_kf_idx, historyKeyframeSearchNum, _loop_kf_idx); 
 
-    // loop verification 
-    sensor_msgs::msg::PointCloud2 cureKeyframeCloudMsg;
-    pcl::toROSMsg(*cureKeyframeCloud, cureKeyframeCloudMsg);
-    cureKeyframeCloudMsg.header.frame_id = "camera_init";
-    pubLoopScanLocal->publish(cureKeyframeCloudMsg);
+    // loop verification debug topics
+    if (pubLoopScan) {
+        sensor_msgs::msg::PointCloud2 cureKeyframeCloudMsg;
+        pcl::toROSMsg(*cureKeyframeCloud, cureKeyframeCloudMsg);
+        cureKeyframeCloudMsg.header.frame_id = "camera_init";
+        pubLoopScanLocal->publish(cureKeyframeCloudMsg);
+    }
 
-    sensor_msgs::msg::PointCloud2 targetKeyframeCloudMsg;
-    pcl::toROSMsg(*targetKeyframeCloud, targetKeyframeCloudMsg);
-    targetKeyframeCloudMsg.header.frame_id = "camera_init";
-    pubLoopSubmapLocal->publish(targetKeyframeCloudMsg);
+    if (pubLoopSubmap) {
+        sensor_msgs::msg::PointCloud2 targetKeyframeCloudMsg;
+        pcl::toROSMsg(*targetKeyframeCloud, targetKeyframeCloudMsg);
+        targetKeyframeCloudMsg.header.frame_id = "camera_init";
+        pubLoopSubmapLocal->publish(targetKeyframeCloudMsg);
+    }
 
     // ICP Settings
     pcl::IterativeClosestPoint<PointType, PointType> icp;
@@ -937,6 +943,8 @@ LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
 
     scDistThres = declareAndGet<double>(this, "sc_dist_thres", 0.2);
     scMaximumRadius = declareAndGet<double>(this, "sc_max_radius", 80.0);
+    pubLoopScan = declareAndGet<bool>(this, "pub_loop_scan", true);
+    pubLoopSubmap = declareAndGet<bool>(this, "pub_loop_submap", true);
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
