@@ -9,6 +9,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -29,6 +30,7 @@ include_directories(
 
 set(ROS_DEPENDENCIES
   rclcpp
+  rclcpp_components
   geometry_msgs
   nav_msgs
   sensor_msgs
@@ -38,20 +40,29 @@ set(ROS_DEPENDENCIES
   tf2_geometry_msgs
 )
 
-add_executable(alaserPGO
+add_library(alaser_pgo_component SHARED
   src/laserPosegraphOptimization.cpp
   include/scancontext/Scancontext.cpp
 )
-ament_target_dependencies(alaserPGO ${ROS_DEPENDENCIES})
-target_compile_options(alaserPGO PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(alaserPGO
+ament_target_dependencies(alaser_pgo_component ${ROS_DEPENDENCIES})
+target_compile_options(alaser_pgo_component PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(alaser_pgo_component
   ${PCL_LIBRARIES}
   ${OpenMP_CXX_FLAGS}
   gtsam
 )
+rclcpp_components_register_nodes(alaser_pgo_component "aloam_velodyne::LaserPGONode")
 
-install(TARGETS alaserPGO
-  DESTINATION lib/${PROJECT_NAME}
+add_executable(alaserPGO src/laser_pgo_main.cpp)
+target_link_libraries(alaserPGO alaser_pgo_component)
+ament_target_dependencies(alaserPGO rclcpp)
+
+install(TARGETS
+  alaserPGO
+  alaser_pgo_component
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 install(DIRECTORY include/

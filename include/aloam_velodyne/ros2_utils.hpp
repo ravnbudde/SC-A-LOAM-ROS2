@@ -20,8 +20,14 @@ inline double stampToSec(const builtin_interfaces::msg::Time & stamp)
 }
 
 template <typename T>
-T declareAndGet(const rclcpp::Node::SharedPtr & node, const std::string & name, const T & default_value)
+T declareAndGet(rclcpp::Node * node, const std::string & name, const T & default_value)
 {
   node->declare_parameter<T>(name, default_value);
   return node->get_parameter(name).get_value<T>();
+}
+
+template <typename T>
+T declareAndGet(const rclcpp::Node::SharedPtr & node, const std::string & name, const T & default_value)
+{
+  return declareAndGet<T>(node.get(), name, default_value);
 }

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <optional>
+#include <atomic>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -26,6 +27,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
@@ -57,6 +59,7 @@
 #include "aloam_velodyne/common.h"
 #include "aloam_velodyne/tic_toc.h"
 #include "aloam_velodyne/ros2_utils.hpp"
+#include "aloam_velodyne/laser_pgo_node.hpp"
 
 #include "scancontext/Scancontext.h"
 
@@ -120,6 +123,7 @@ pcl::VoxelGrid<PointType> downSizeFilterMapPGO;
 bool laserCloudMapPGORedraw = true;
 
 bool useGPS = true;
+std::atomic_bool pgoRunning{false};
 // bool useGPS = false;
 sensor_msgs::msg::NavSatFix::ConstSharedPtr currGPS;
 bool hasGPSforThisKF = false;
@@ -556,7 +560,7 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
 
 void process_pg()
 {
-    while (rclcpp::ok())
+    while (rclcpp::ok() && pgoRunning.load())
     {
 		while ( !odometryBuf.empty() && !fullResBuf.empty() )
         {
@@ -740,7 +744,7 @@ void process_lcd(void)
 {
     float loopClosureFrequency = 1.0; // can change 
     rclcpp::Rate rate(loopClosureFrequency);
-    while (rclcpp::ok())
+    while (rclcpp::ok() && pgoRunning.load())
     {
         rate.sleep();
         performSCLoopClosure();
@@ -750,7 +754,7 @@ void process_lcd(void)
 
 void process_icp(void)
 {
-    while (rclcpp::ok())
+    while (rclcpp::ok() && pgoRunning.load())
     {
 		while ( !scLoopICPBuf.empty() )
         {
@@ -786,7 +790,7 @@ void process_viz_path(void)
 {
     float hz = 10.0; 
     rclcpp::Rate rate(hz);
-    while (rclcpp::ok()) {
+    while (rclcpp::ok() && pgoRunning.load()) {
         rate.sleep();
         if(recentIdxUpdated > 1) {
             pubPath();
@@ -798,7 +802,7 @@ void process_isam(void)
 {
     float hz = 1; 
     rclcpp::Rate rate(hz);
-    while (rclcpp::ok()) {
+    while (rclcpp::ok() && pgoRunning.load()) {
         rate.sleep();
         if( gtSAMgraphMade ) {
             mtxPosegraph.lock();
@@ -843,47 +847,94 @@ void process_viz_map(void)
 {
     float vizmapFrequency = 0.1; // 0.1 means run onces every 10s
     rclcpp::Rate rate(vizmapFrequency);
-    while (rclcpp::ok()) {
+    while (rclcpp::ok() && pgoRunning.load()) {
         rate.sleep();
         if(recentIdxUpdated > 1) {
             pubMap();
         }
-    }
-} // pointcloud_viz
 
-
-int main(int argc, char **argv)
+void resetPGOState()
 {
-	rclcpp::init(argc, argv);
-	auto nh = std::make_shared<rclcpp::Node>("laserPGO");
-    tfBroadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
+    std::lock_guard<std::mutex> lock_buf(mBuf);
+    std::lock_guard<std::mutex> lock_kf(mKF);
+    std::lock_guard<std::mutex> lock_posegraph(mtxPosegraph);
 
-    // save directories 
-	save_directory = declareAndGet<std::string>(nh, "save_directory", "/"); // pose assignment every k m move 
+    while (!odometryBuf.empty()) odometryBuf.pop();
+    while (!fullResBuf.empty()) fullResBuf.pop();
+    while (!gpsBuf.empty()) gpsBuf.pop();
+    while (!scLoopICPBuf.empty()) scLoopICPBuf.pop();
+
+    translationAccumulated = 1000000.0;
+    rotaionAccumulated = 1000000.0;
+    isNowKeyFrame = false;
+    odom_pose_prev = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    odom_pose_curr = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    timeLaserOdometry = 0.0;
+    timeLaser = 0.0;
+
+    laserCloudFullRes->clear();
+    laserCloudMapAfterPGO->clear();
+    laserCloudMapPGO->clear();
+    keyframeLaserClouds.clear();
+    keyframePoses.clear();
+    keyframePosesUpdated.clear();
+    keyframeTimes.clear();
+    recentIdxUpdated = 0;
+
+    gtSAMgraph.resize(0);
+    gtSAMgraphMade = false;
+    initialEstimate.clear();
+    isamCurrentEstimate.clear();
+    if (isam != nullptr) {
+        delete isam;
+        isam = nullptr;
+    }
+
+    laserCloudMapPGORedraw = true;
+    currGPS.reset();
+    hasGPSforThisKF = false;
+    gpsOffsetInitialized = false;
+    gpsAltitudeInitOffset = 0.0;
+    recentOptimizedX = 0.0;
+    recentOptimizedY = 0.0;
+    edges_str.clear();
+}
+
+namespace aloam_velodyne
+{
+
+LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
+: rclcpp::Node("laserPGO", options)
+{
+    if (pgoRunning.exchange(true)) {
+        throw std::runtime_error("LaserPGONode only supports one instance per process");
+    }
+
+    resetPGOState();
+    tfBroadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
+
+    save_directory = declareAndGet<std::string>(this, "save_directory", "/");
 
     pgKITTIformat = save_directory + "optimized_poses.txt";
     odomKITTIformat = save_directory + "odom_poses.txt";
 
-    // pgG2oSaveStream = std::fstream(save_directory + "singlesession_posegraph.g2o", std::fstream::out);
-
-    pgTimeSaveStream = std::fstream(save_directory + "times.txt", std::fstream::out); 
+    pgTimeSaveStream = std::fstream(save_directory + "times.txt", std::fstream::out);
     pgTimeSaveStream.precision(std::numeric_limits<double>::max_digits10);
 
     pgScansDirectory = save_directory + "Scans/";
     std::filesystem::remove_all(pgScansDirectory);
     std::filesystem::create_directories(pgScansDirectory);
 
-    pgSCDsDirectory = save_directory + "SCDs/"; // SCD: scan context descriptor 
+    pgSCDsDirectory = save_directory + "SCDs/";
     std::filesystem::remove_all(pgSCDsDirectory);
     std::filesystem::create_directories(pgSCDsDirectory);
 
-    // system params 
-	keyframeMeterGap = declareAndGet<double>(nh, "keyframe_meter_gap", 2.0); // pose assignment every k m move 
-	keyframeDegGap = declareAndGet<double>(nh, "keyframe_deg_gap", 10.0); // pose assignment every k deg rot 
+    keyframeMeterGap = declareAndGet<double>(this, "keyframe_meter_gap", 2.0);
+    keyframeDegGap = declareAndGet<double>(this, "keyframe_deg_gap", 10.0);
     keyframeRadGap = deg2rad(keyframeDegGap);
 
-	scDistThres = declareAndGet<double>(nh, "sc_dist_thres", 0.2);  
-	scMaximumRadius = declareAndGet<double>(nh, "sc_max_radius", 80.0); // 80 is recommended for outdoor, and lower (ex, 20, 40) values are recommended for indoor 
+    scDistThres = declareAndGet<double>(this, "sc_dist_thres", 0.2);
+    scMaximumRadius = declareAndGet<double>(this, "sc_max_radius", 80.0);
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
@@ -894,42 +945,50 @@ int main(int argc, char **argv)
     scManager.setSCdistThres(scDistThres);
     scManager.setMaximumRadius(scMaximumRadius);
 
-    float filter_size = 0.4; 
+    float filter_size = 0.4;
     downSizeFilterScancontext.setLeafSize(filter_size, filter_size, filter_size);
     downSizeFilterICP.setLeafSize(filter_size, filter_size, filter_size);
 
-    double mapVizFilterSize;
-	mapVizFilterSize = declareAndGet<double>(nh, "mapviz_filter_size", 0.4); // pose assignment every k frames 
+    double mapVizFilterSize = declareAndGet<double>(this, "mapviz_filter_size", 0.4);
     downSizeFilterMapPGO.setLeafSize(mapVizFilterSize, mapVizFilterSize, mapVizFilterSize);
 
-	auto subLaserCloudFullRes = nh->create_subscription<sensor_msgs::msg::PointCloud2>("/velodyne_cloud_registered_local", 100, laserCloudFullResHandler);
-	auto subLaserOdometry = nh->create_subscription<nav_msgs::msg::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
-	auto subGPS = nh->create_subscription<sensor_msgs::msg::NavSatFix>("/gps/fix", 100, gpsHandler);
+    sub_laser_cloud_full_res_ = this->create_subscription<sensor_msgs::msg::PointCloud2>("/velodyne_cloud_registered_local", 100, laserCloudFullResHandler);
+    sub_laser_odometry_ = this->create_subscription<nav_msgs::msg::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
+    sub_gps_ = this->create_subscription<sensor_msgs::msg::NavSatFix>("/gps/fix", 100, gpsHandler);
 
-	pubOdomAftPGO = nh->create_publisher<nav_msgs::msg::Odometry>("/aft_pgo_odom", 100);
-	pubOdomRepubVerifier = nh->create_publisher<nav_msgs::msg::Odometry>("/repub_odom", 100);
-	pubPathAftPGO = nh->create_publisher<nav_msgs::msg::Path>("/aft_pgo_path", 100);
-	pubMapAftPGO = nh->create_publisher<sensor_msgs::msg::PointCloud2>("/aft_pgo_map", 100);
+    pubOdomAftPGO = this->create_publisher<nav_msgs::msg::Odometry>("/aft_pgo_odom", 100);
+    pubOdomRepubVerifier = this->create_publisher<nav_msgs::msg::Odometry>("/repub_odom", 100);
+    pubPathAftPGO = this->create_publisher<nav_msgs::msg::Path>("/aft_pgo_path", 100);
+    pubMapAftPGO = this->create_publisher<sensor_msgs::msg::PointCloud2>("/aft_pgo_map", 100);
 
-	pubLoopScanLocal = nh->create_publisher<sensor_msgs::msg::PointCloud2>("/loop_scan_local", 100);
-	pubLoopSubmapLocal = nh->create_publisher<sensor_msgs::msg::PointCloud2>("/loop_submap_local", 100);
+    pubLoopScanLocal = this->create_publisher<sensor_msgs::msg::PointCloud2>("/loop_scan_local", 100);
+    pubLoopSubmapLocal = this->create_publisher<sensor_msgs::msg::PointCloud2>("/loop_submap_local", 100);
 
-	std::thread posegraph_slam {process_pg}; // pose graph construction
-	std::thread lc_detection {process_lcd}; // loop closure detection 
-	std::thread icp_calculation {process_icp}; // loop constraint calculation via icp 
-	std::thread isam_update {process_isam}; // if you want to call less isam2 run (for saving redundant computations and no real-time visulization is required), uncommment this and comment all the above runisam2opt when node is added. 
-
-	std::thread viz_map {process_viz_map}; // visualization - map (low frequency because it is heavy)
-	std::thread viz_path {process_viz_path}; // visualization - path (high frequency)
-
- 	rclcpp::spin(nh);
-
-	posegraph_slam.join();
-	lc_detection.join();
-	icp_calculation.join();
-	isam_update.join();
-	viz_map.join();
-	viz_path.join();
-	rclcpp::shutdown();
-	return 0;
+    worker_threads_.emplace_back(process_pg);
+    worker_threads_.emplace_back(process_lcd);
+    worker_threads_.emplace_back(process_icp);
+    worker_threads_.emplace_back(process_isam);
+    worker_threads_.emplace_back(process_viz_map);
+    worker_threads_.emplace_back(process_viz_path);
 }
+
+LaserPGONode::~LaserPGONode()
+{
+    pgoRunning.store(false);
+    for (auto & thread : worker_threads_) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    if (pgTimeSaveStream.is_open()) {
+        pgTimeSaveStream.close();
+    }
+    if (isam != nullptr) {
+        delete isam;
+        isam = nullptr;
+    }
+}
+
+}  // namespace aloam_velodyne
+
+RCLCPP_COMPONENTS_REGISTER_NODE(aloam_velodyne::LaserPGONode)
