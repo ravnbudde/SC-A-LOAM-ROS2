@@ -101,7 +101,7 @@ int recentIdxUpdated = 0;
 gtsam::NonlinearFactorGraph gtSAMgraph;
 bool gtSAMgraphMade = false;
 gtsam::Values initialEstimate;
-gtsam::ISAM2 *isam;
+gtsam::ISAM2 *isam = nullptr;
 gtsam::Values isamCurrentEstimate;
 
 noiseModel::Diagonal::shared_ptr priorNoise;
@@ -852,6 +852,8 @@ void process_viz_map(void)
         if(recentIdxUpdated > 1) {
             pubMap();
         }
+    }
+}
 
 void resetPGOState()
 {
