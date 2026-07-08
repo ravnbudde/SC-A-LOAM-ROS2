@@ -1,77 +1,85 @@
-# SC-PGO ROS 2
+# SC-PGO ROS 2 Runtime Package
 
-This branch is a trimmed ROS 2 package that keeps only the Scan Context pose graph optimization node from SC-A-LOAM. It is intended to run behind an external odometry front-end such as Fast-LIO.
+This is the Scan Context pose graph optimization back-end used by the parent [`FAST_LIO_SLAM_ROS2`](https://github.com/ravnbudde/FAST_LIO_SLAM_ROS2) stack.
 
-## What is included
+For full SLAM usage, composed launch commands, topic wiring, Fast-LIO integration, and bag verification, see the parent repository README.
 
-- `alaserPGO`: Scan Context loop detection, ICP loop constraints, GPS altitude factor, and GTSAM/iSAM2 pose graph optimization.
-- `include/scancontext`: Scan Context descriptor and loop-candidate search.
-- `rviz_cfg/aloam_velodyne.rviz`: RViz visualization config.
-- `utils/python/makeMergedMap.py`: offline Open3D map builder for saved keyframe scans and optimized poses.
-- `launch/sc_pgo_fast_lio.launch.py`: launch file with remaps for Fast-LIO odometry, registered cloud, and optional GNSS.
+## What This Fork Provides
 
-## Required inputs
+- ROS 2 package name: `aloam_velodyne`
+- Standalone executable: `alaserPGO`
+- Composable node plugin: `aloam_velodyne::LaserPGONode`
+- Scan Context loop detection
+- ICP loop constraint calculation
+- GTSAM/iSAM2 pose graph optimization
+- Optional GNSS altitude factor from `sensor_msgs/msg/NavSatFix`
+- RViz config and offline Open3D map utility
 
-`alaserPGO` subscribes to these internal topic names:
+## Why This Package Is Trimmed
 
-- `/aft_mapped_to_init` (`nav_msgs/msg/Odometry`)
-- `/velodyne_cloud_registered_local` (`sensor_msgs/msg/PointCloud2`)
-- `/gps/fix` (`sensor_msgs/msg/NavSatFix`, optional altitude stabilization)
+The original SC-A-LOAM repository includes the A-LOAM front-end, KITTI helper, Docker files, sample maps, images, and other examples. In this stack, Fast-LIO is the odometry front-end, so this package only keeps the SC-PGO back-end and the small utilities needed to inspect its output.
 
-Use launch remaps to connect those to your front-end topics.
+Removed from this fork/runtime branch:
 
-## Build
+- A-LOAM scan registration, odometry, and mapping nodes
+- KITTI helper
+- Docker files
+- sample datasets and result images
+- stale Python bytecode/cache files
 
-```bash
-cd /home/lonewolf/temp_ws
-colcon build --packages-select aloam_velodyne
-source install/setup.bash
+Kept intentionally:
+
+- `src/laserPosegraphOptimization.cpp`
+- Scan Context headers and implementation
+- `rviz_cfg/aloam_velodyne.rviz`
+- `utils/python/makeMergedMap.py` and color tables for offline map inspection
+
+## Inputs
+
+SC-PGO subscribes to these internal topic names:
+
+```text
+/aft_mapped_to_init                 nav_msgs/msg/Odometry
+/velodyne_cloud_registered_local    sensor_msgs/msg/PointCloud2
+/gps/fix                            sensor_msgs/msg/NavSatFix, optional
 ```
 
-## Run With Fast-LIO Bag Topics
-
-```bash
-ros2 launch aloam_velodyne sc_pgo_fast_lio.launch.py \
-  save_directory:=/home/lonewolf/temp_ws/sc_pgo_out/ \
-  use_sim_time:=true \
-  odom_topic:=/lonewolf/odometry/local \
-  cloud_topic:=/lonewolf/fast_lio/cloud_registered_body \
-  gps_topic:=/lonewolf/vectornav/gnss
-```
-
-Then play the bag in another terminal:
-
-```bash
-ros2 bag play /home/lonewolf/temp_ws/fast_lio_bag
-```
-
-`save_directory` is destructive for `Scans/` and `SCDs/`: the node recreates those subdirectories on startup. Use a fresh output directory for each run you want to keep.
+Use launch remaps to connect them to your odometry front-end topics.
 
 ## Outputs
 
-Published topics:
-
-- `/aft_pgo_odom`
-- `/aft_pgo_path`
-- `/aft_pgo_map`
-- `/loop_scan_local`
-- `/loop_submap_local`
-
-Saved files:
-
-- `optimized_poses.txt`
-- `odom_poses.txt`
-- `times.txt`
-- `Scans/*.pcd`
-- `SCDs/*`
-
-## Offline Map Inspection
-
-Edit `utils/python/makeMergedMap.py` so `data_dir` points at the SC-PGO output directory, then run it from the utility directory:
-
-```bash
-cd /home/lonewolf/temp_ws/src/SC-A-LOAM-ROS2/utils/python
-python3 makeMergedMap.py
+```text
+/aft_pgo_odom        nav_msgs/msg/Odometry
+/aft_pgo_path        nav_msgs/msg/Path
+/aft_pgo_map         sensor_msgs/msg/PointCloud2
+/loop_scan_local     sensor_msgs/msg/PointCloud2
+/loop_submap_local   sensor_msgs/msg/PointCloud2
 ```
 
-The script stacks saved keyframe scans using `optimized_poses.txt`, opens an Open3D viewer, and saves a merged map PCD in the output directory.
+Saved files under `save_directory`:
+
+```text
+optimized_poses.txt
+odom_poses.txt
+times.txt
+singlesession_posegraph.g2o
+Scans/*.pcd
+SCDs/*.scd
+```
+
+`Scans/` and `SCDs/` are recreated when SC-PGO starts. Use a new `save_directory` for each run you want to keep.
+
+## Standalone Usage
+
+```bash
+colcon build --packages-select aloam_velodyne
+source install/setup.bash
+
+ros2 run aloam_velodyne alaserPGO --ros-args \
+  -p save_directory:=/tmp/sc_pgo/ \
+  -r /aft_mapped_to_init:=/fast_lio_slam/odometry/local \
+  -r /velodyne_cloud_registered_local:=/fast_lio_slam/points/body \
+  -r /gps/fix:=/gps/fix
+```
+
+The parent full-stack launch uses the composed plugin instead of the standalone process.
