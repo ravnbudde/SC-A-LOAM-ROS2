@@ -142,6 +142,10 @@ rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomRepubVerifier;
 rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPathAftPGO;
 std::shared_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
 
+std::string map_frame_id = "camera_init";
+std::string body_frame_id = "aft_pgo";
+bool enable_tf = true;
+
 std::string save_directory;
 std::string pgKITTIformat, pgScansDirectory, pgSCDsDirectory;
 std::string odomKITTIformat;
@@ -375,7 +379,7 @@ void pubPath( void )
     // pub odom and path 
     nav_msgs::msg::Odometry odomAftPGO;
     nav_msgs::msg::Path pathAftPGO;
-    pathAftPGO.header.frame_id = "camera_init";
+    pathAftPGO.header.frame_id = map_frame_id;
     mKF.lock(); 
     // for (int node_idx=0; node_idx < int(keyframePosesUpdated.size()) - 1; node_idx++) // -1 is just delayed visualization (because sometimes mutexed while adding(push_back) a new one)
     for (int node_idx=0; node_idx < recentIdxUpdated; node_idx++) // -1 is just delayed visualization (because sometimes mutexed while adding(push_back) a new one)
@@ -384,8 +388,8 @@ void pubPath( void )
         // const gtsam::Pose3& pose_est = isamCurrentEstimate.at<gtsam::Pose3>(node_idx);
 
         nav_msgs::msg::Odometry odomAftPGOthis;
-        odomAftPGOthis.header.frame_id = "camera_init";
-        odomAftPGOthis.child_frame_id = "aft_pgo";
+        odomAftPGOthis.header.frame_id = map_frame_id;
+        odomAftPGOthis.child_frame_id = body_frame_id;
         odomAftPGOthis.header.stamp = rosTimeFromSec(keyframeTimes.at(node_idx));
         odomAftPGOthis.pose.pose.position.x = pose_est.x;
         odomAftPGOthis.pose.pose.position.y = pose_est.y;
@@ -400,7 +404,7 @@ void pubPath( void )
         poseStampAftPGO.pose = odomAftPGOthis.pose.pose;
 
         pathAftPGO.header.stamp = odomAftPGOthis.header.stamp;
-        pathAftPGO.header.frame_id = "camera_init";
+        pathAftPGO.header.frame_id = map_frame_id;
         pathAftPGO.poses.push_back(poseStampAftPGO);
     }
     mKF.unlock(); 
@@ -409,13 +413,15 @@ void pubPath( void )
 
     geometry_msgs::msg::TransformStamped transform;
     transform.header.stamp = odomAftPGO.header.stamp;
-    transform.header.frame_id = "camera_init";
-    transform.child_frame_id = "aft_pgo";
+    transform.header.frame_id = map_frame_id;
+    transform.child_frame_id = body_frame_id;
     transform.transform.translation.x = odomAftPGO.pose.pose.position.x;
     transform.transform.translation.y = odomAftPGO.pose.pose.position.y;
     transform.transform.translation.z = odomAftPGO.pose.pose.position.z;
     transform.transform.rotation = odomAftPGO.pose.pose.orientation;
-    tfBroadcaster->sendTransform(transform);
+    if (enable_tf) {
+        tfBroadcaster->sendTransform(transform);
+    }
 } // pubPath
 
 void updatePoses(void)
@@ -520,14 +526,14 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
     if (pubLoopScan) {
         sensor_msgs::msg::PointCloud2 cureKeyframeCloudMsg;
         pcl::toROSMsg(*cureKeyframeCloud, cureKeyframeCloudMsg);
-        cureKeyframeCloudMsg.header.frame_id = "camera_init";
+        cureKeyframeCloudMsg.header.frame_id = map_frame_id;
         pubLoopScanLocal->publish(cureKeyframeCloudMsg);
     }
 
     if (pubLoopSubmap) {
         sensor_msgs::msg::PointCloud2 targetKeyframeCloudMsg;
         pcl::toROSMsg(*targetKeyframeCloud, targetKeyframeCloudMsg);
-        targetKeyframeCloudMsg.header.frame_id = "camera_init";
+        targetKeyframeCloudMsg.header.frame_id = map_frame_id;
         pubLoopSubmapLocal->publish(targetKeyframeCloudMsg);
     }
 
@@ -845,7 +851,7 @@ void pubMap(void)
 
     sensor_msgs::msg::PointCloud2 laserCloudMapPGOMsg;
     pcl::toROSMsg(*laserCloudMapPGO, laserCloudMapPGOMsg);
-    laserCloudMapPGOMsg.header.frame_id = "camera_init";
+    laserCloudMapPGOMsg.header.frame_id = map_frame_id;
     pubMapAftPGO->publish(laserCloudMapPGOMsg);
 }
 
@@ -922,6 +928,9 @@ LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
     tfBroadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
     save_directory = declareAndGet<std::string>(this, "save_directory", "/");
+    map_frame_id = declareAndGet<std::string>(this, "map_frame_id", "camera_init");
+    body_frame_id = declareAndGet<std::string>(this, "body_frame_id", "aft_pgo");
+    enable_tf = declareAndGet<bool>(this, "enable_tf", true);
 
     pgKITTIformat = save_directory + "optimized_poses.txt";
     odomKITTIformat = save_directory + "odom_poses.txt";
