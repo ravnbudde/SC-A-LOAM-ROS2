@@ -223,7 +223,7 @@ void saveGTSAMgraphG2oFormat(const gtsam::Values& _estimates)
 {
     // save pose graph (runs when programe is closing)
     // cout << "****************************************************" << endl; 
-    cout << "Saving the posegraph ..." << endl; // giseop
+    RCLCPP_DEBUG(rclcpp::get_logger("laserPGO"), "Saving the posegraph ..."); // giseop
 
     pgG2oSaveStream = std::fstream(save_directory + "singlesession_posegraph.g2o", std::fstream::out);
 
@@ -751,7 +751,7 @@ void process_pg()
                         gtsam::Point3 gpsConstraint(recentOptimizedX, recentOptimizedY, curr_altitude_offseted); // in this example, only adjusting altitude (for x and y, very big noises are set) 
                         mtxRecentPose.unlock();
                         gtSAMgraph.add(gtsam::GPSFactor(curr_node_idx, gpsConstraint, robustGPSNoise));
-                        cout << "GPS factor added at node " << curr_node_idx << endl;
+                        RCLCPP_DEBUG(rclcpp::get_logger("laserPGO"), "GPS factor added at node %d", curr_node_idx);
                     }
                     initialEstimate.insert(curr_node_idx, poseTo);                
                     writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
@@ -886,7 +886,7 @@ void process_isam(void)
         if( gtSAMgraphMade ) {
             mtxPosegraph.lock();
             runISAM2opt();
-            cout << "running isam2 optimization ..." << endl;
+            RCLCPP_DEBUG(rclcpp::get_logger("laserPGO"), "running isam2 optimization ...");
             mtxPosegraph.unlock();
 
             saveOptimizedVerticesKITTIformat(isamCurrentEstimate, pgKITTIformat); // pose
