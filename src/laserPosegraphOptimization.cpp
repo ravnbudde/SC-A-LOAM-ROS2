@@ -112,6 +112,9 @@ noiseModel::Base::shared_ptr robustGPSNoise;
 pcl::VoxelGrid<PointType> downSizeFilterScancontext;
 SCManager scManager;
 double scDistThres, scMaximumRadius;
+double loopIcpMaxCorrespondenceDistance, loopIcpFitnessThreshold;
+int loopHistoryKeyframeSearchNum, scNumExcludeRecent;
+double loopClosureFrequency;
 
 pcl::VoxelGrid<PointType> downSizeFilterICP;
 std::mutex mtxICP;
@@ -516,7 +519,7 @@ void loopFindNearKeyframesCloud( pcl::PointCloud<PointType>::Ptr& nearKeyframes,
 std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf_idx )
 {
     // parse pointclouds
-    int historyKeyframeSearchNum = 25; // enough. ex. [-25, 25] covers submap length of 50x1 = 50m if every kf gap is 1m
+    int historyKeyframeSearchNum = loopHistoryKeyframeSearchNum;
     pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
     pcl::PointCloud<PointType>::Ptr targetKeyframeCloud(new pcl::PointCloud<PointType>());
     loopFindNearKeyframesCloud(cureKeyframeCloud, _curr_kf_idx, 0, _loop_kf_idx); // use same root of loop kf idx 
@@ -539,7 +542,7 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
 
     // ICP Settings
     pcl::IterativeClosestPoint<PointType, PointType> icp;
-    icp.setMaxCorrespondenceDistance(150); // giseop , use a value can cover 2*historyKeyframeSearchNum range in meter 
+    icp.setMaxCorrespondenceDistance(loopIcpMaxCorrespondenceDistance);
     icp.setMaximumIterations(100);
     icp.setTransformationEpsilon(1e-6);
     icp.setEuclideanFitnessEpsilon(1e-6);
@@ -551,7 +554,7 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
     pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
     icp.align(*unused_result);
  
-    float loopFitnessScoreThreshold = 0.3; // user parameter but fixed low value is safe. 
+    float loopFitnessScoreThreshold = loopIcpFitnessThreshold;
     if (icp.hasConverged() == false || icp.getFitnessScore() > loopFitnessScoreThreshold) {
         std::cout << "[SC loop] ICP fitness test failed (" << icp.getFitnessScore() << " > " << loopFitnessScoreThreshold << "). Reject this SC loop." << std::endl;
         return std::nullopt;
@@ -754,7 +757,6 @@ void performSCLoopClosure(void)
 
 void process_lcd(void)
 {
-    float loopClosureFrequency = 1.0; // can change 
     rclcpp::Rate rate(loopClosureFrequency);
     while (rclcpp::ok() && pgoRunning.load())
     {
@@ -952,6 +954,11 @@ LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
 
     scDistThres = declareAndGet<double>(this, "sc_dist_thres", 0.2);
     scMaximumRadius = declareAndGet<double>(this, "sc_max_radius", 80.0);
+    scNumExcludeRecent = declareAndGet<int>(this, "sc_num_exclude_recent", 30);
+    loopHistoryKeyframeSearchNum = declareAndGet<int>(this, "loop_history_keyframe_search_num", 25);
+    loopIcpMaxCorrespondenceDistance = declareAndGet<double>(this, "loop_icp_max_correspondence_distance", 150.0);
+    loopIcpFitnessThreshold = declareAndGet<double>(this, "loop_icp_fitness_threshold", 0.3);
+    loopClosureFrequency = declareAndGet<double>(this, "loop_closure_frequency", 1.0);
     pubLoopScan = declareAndGet<bool>(this, "pub_loop_scan", true);
     pubLoopSubmap = declareAndGet<bool>(this, "pub_loop_submap", true);
 
@@ -963,6 +970,7 @@ LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
 
     scManager.setSCdistThres(scDistThres);
     scManager.setMaximumRadius(scMaximumRadius);
+    scManager.setNumExcludeRecent(scNumExcludeRecent);
 
     float filter_size = 0.4;
     downSizeFilterScancontext.setLeafSize(filter_size, filter_size, filter_size);

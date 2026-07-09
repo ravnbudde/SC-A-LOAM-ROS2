@@ -1,5 +1,7 @@
 #include "scancontext/Scancontext.h"
 
+#include <algorithm>
+
 // namespace SC2
 // {
 
@@ -270,6 +272,11 @@ void SCManager::setMaximumRadius(double _max_r)
 {
     PC_MAX_RADIUS = _max_r;
 } // SCManager::setMaximumRadius
+
+void SCManager::setNumExcludeRecent(int _num_exclude_recent)
+{
+    NUM_EXCLUDE_RECENT = std::max(1, _num_exclude_recent);
+} // SCManager::setNumExcludeRecent
 
 std::pair<int, float> SCManager::detectLoopClosureIDBetweenSession (std::vector<float>& _curr_key, Eigen::MatrixXd& _curr_desc)
 {
