@@ -72,6 +72,9 @@ double keyframeMeterGap;
 double keyframeDegGap, keyframeRadGap;
 double translationAccumulated = 1000000.0; // large value means must add the first given frame.
 double rotaionAccumulated = 1000000.0; // large value means must add the first given frame.
+double yawAccumulatedSinceKeyframe = 0.0;
+double maxYawRateSinceKeyframe = 0.0;
+double keyframeIntervalStartTime = 0.0;
 
 bool isNowKeyFrame = false; 
 
@@ -655,10 +658,15 @@ void process_pg()
             odom_pose_prev = odom_pose_curr;
             odom_pose_curr = pose_curr;
             Pose6D dtf = diffTransformation(odom_pose_prev, odom_pose_curr); // dtf means delta_transform
+            if (keyframeIntervalStartTime <= 0.0)
+                keyframeIntervalStartTime = timeLaserOdometry;
+
             const double odometry_dt = timeLaserOdometryPrev > 0.0 ?
                 timeLaserOdometry - timeLaserOdometryPrev : 0.0;
             const double current_yaw_rate = odometry_dt > 1.0e-3 ? dtf.yaw / odometry_dt : 0.0;
             timeLaserOdometryPrev = timeLaserOdometry;
+            maxYawRateSinceKeyframe = std::max(maxYawRateSinceKeyframe, current_yaw_rate);
+            yawAccumulatedSinceKeyframe += dtf.yaw;
 
             double delta_translation = sqrt(dtf.x*dtf.x + dtf.y*dtf.y + dtf.z*dtf.z); // note: absolute value. 
             translationAccumulated += delta_translation;
@@ -694,7 +702,13 @@ void process_pg()
             keyframePoses.push_back(pose_curr);
             keyframePosesUpdated.push_back(pose_curr); // init
             keyframeTimes.push_back(timeLaserOdometry);
-            keyframeYawRates.push_back(current_yaw_rate);
+            const double keyframe_interval_duration = timeLaserOdometry - keyframeIntervalStartTime;
+            const double average_yaw_rate = keyframe_interval_duration > 1.0e-3 ?
+                yawAccumulatedSinceKeyframe / keyframe_interval_duration : maxYawRateSinceKeyframe;
+            keyframeYawRates.push_back(std::max(maxYawRateSinceKeyframe, average_yaw_rate));
+            yawAccumulatedSinceKeyframe = 0.0;
+            maxYawRateSinceKeyframe = 0.0;
+            keyframeIntervalStartTime = timeLaserOdometry;
 
             scManager.makeAndSaveScancontextAndKeys(*thisKeyFrameDS);
 
@@ -933,6 +947,9 @@ void resetPGOState()
 
     translationAccumulated = 1000000.0;
     rotaionAccumulated = 1000000.0;
+    yawAccumulatedSinceKeyframe = 0.0;
+    maxYawRateSinceKeyframe = 0.0;
+    keyframeIntervalStartTime = 0.0;
     isNowKeyFrame = false;
     odom_pose_prev = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     odom_pose_curr = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
