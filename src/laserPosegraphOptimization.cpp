@@ -88,6 +88,7 @@ std::mutex mKF;
 
 double timeLaserOdometry = 0.0;
 double timeLaser = 0.0;
+double timeLaserOdometryPrev = 0.0;
 
 pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
 pcl::PointCloud<PointType>::Ptr laserCloudMapAfterPGO(new pcl::PointCloud<PointType>());
@@ -96,6 +97,7 @@ std::vector<pcl::PointCloud<PointType>::Ptr> keyframeLaserClouds;
 std::vector<Pose6D> keyframePoses;
 std::vector<Pose6D> keyframePosesUpdated;
 std::vector<double> keyframeTimes;
+std::vector<double> keyframeYawRates;
 int recentIdxUpdated = 0;
 
 gtsam::NonlinearFactorGraph gtSAMgraph;
@@ -114,7 +116,7 @@ SCManager scManager;
 double scDistThres, scMaximumRadius;
 double loopIcpMaxCorrespondenceDistance, loopIcpFitnessThreshold;
 int loopHistoryKeyframeSearchNum, scNumExcludeRecent;
-double loopClosureFrequency;
+double loopClosureFrequency, loopMinPathDistance, loopMaxKeyframeYawRate;
 
 pcl::VoxelGrid<PointType> downSizeFilterICP;
 std::mutex mtxICP;
@@ -516,6 +518,33 @@ void loopFindNearKeyframesCloud( pcl::PointCloud<PointType>::Ptr& nearKeyframes,
 } // loopFindNearKeyframesCloud
 
 
+double keyframePathDistance(const int start_idx, const int end_idx)
+{
+    if (start_idx < 0 || end_idx <= start_idx || end_idx >= int(keyframePoses.size()))
+        return 0.0;
+
+    double distance = 0.0;
+    for (int idx = start_idx + 1; idx <= end_idx; ++idx) {
+        const Pose6D& previous = keyframePoses.at(idx - 1);
+        const Pose6D& current = keyframePoses.at(idx);
+        const double dx = current.x - previous.x;
+        const double dy = current.y - previous.y;
+        const double dz = current.z - previous.z;
+        distance += std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    return distance;
+}
+
+
+bool keyframeYawRateOk(const int keyframe_idx)
+{
+    if (loopMaxKeyframeYawRate <= 0.0 || keyframe_idx < 0 ||
+        keyframe_idx >= int(keyframeYawRates.size()))
+        return true;
+    return keyframeYawRates.at(keyframe_idx) <= loopMaxKeyframeYawRate;
+}
+
+
 std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf_idx )
 {
     // parse pointclouds
@@ -626,6 +655,10 @@ void process_pg()
             odom_pose_prev = odom_pose_curr;
             odom_pose_curr = pose_curr;
             Pose6D dtf = diffTransformation(odom_pose_prev, odom_pose_curr); // dtf means delta_transform
+            const double odometry_dt = timeLaserOdometryPrev > 0.0 ?
+                timeLaserOdometry - timeLaserOdometryPrev : 0.0;
+            const double current_yaw_rate = odometry_dt > 1.0e-3 ? dtf.yaw / odometry_dt : 0.0;
+            timeLaserOdometryPrev = timeLaserOdometry;
 
             double delta_translation = sqrt(dtf.x*dtf.x + dtf.y*dtf.y + dtf.z*dtf.z); // note: absolute value. 
             translationAccumulated += delta_translation;
@@ -661,6 +694,7 @@ void process_pg()
             keyframePoses.push_back(pose_curr);
             keyframePosesUpdated.push_back(pose_curr); // init
             keyframeTimes.push_back(timeLaserOdometry);
+            keyframeYawRates.push_back(current_yaw_rate);
 
             scManager.makeAndSaveScancontextAndKeys(*thisKeyFrameDS);
 
@@ -746,6 +780,23 @@ void performSCLoopClosure(void)
     if( SCclosestHistoryFrameID != -1 ) { 
         const int prev_node_idx = SCclosestHistoryFrameID;
         const int curr_node_idx = keyframePoses.size() - 1; // because cpp starts 0 and ends n-1
+        const double loop_path_distance = keyframePathDistance(prev_node_idx, curr_node_idx);
+        if (loop_path_distance < loopMinPathDistance) {
+            cout << "Loop rejected: path distance " << loop_path_distance << " < "
+                 << loopMinPathDistance << " between " << prev_node_idx << " and "
+                 << curr_node_idx << endl;
+            return;
+        }
+        if (!keyframeYawRateOk(prev_node_idx) || !keyframeYawRateOk(curr_node_idx)) {
+            const double prev_yaw_rate = prev_node_idx < int(keyframeYawRates.size()) ?
+                keyframeYawRates.at(prev_node_idx) : 0.0;
+            const double curr_yaw_rate = curr_node_idx < int(keyframeYawRates.size()) ?
+                keyframeYawRates.at(curr_node_idx) : 0.0;
+            cout << "Loop rejected: keyframe yaw rate prev=" << prev_yaw_rate
+                 << ", curr=" << curr_yaw_rate << " > " << loopMaxKeyframeYawRate
+                 << " between " << prev_node_idx << " and " << curr_node_idx << endl;
+            return;
+        }
         cout << "Loop detected! - between " << prev_node_idx << " and " << curr_node_idx << "" << endl;
 
         mBuf.lock();
@@ -887,6 +938,7 @@ void resetPGOState()
     odom_pose_curr = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     timeLaserOdometry = 0.0;
     timeLaser = 0.0;
+    timeLaserOdometryPrev = 0.0;
 
     laserCloudFullRes->clear();
     laserCloudMapAfterPGO->clear();
@@ -895,6 +947,7 @@ void resetPGOState()
     keyframePoses.clear();
     keyframePosesUpdated.clear();
     keyframeTimes.clear();
+    keyframeYawRates.clear();
     recentIdxUpdated = 0;
 
     gtSAMgraph.resize(0);
@@ -959,6 +1012,8 @@ LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
     loopIcpMaxCorrespondenceDistance = declareAndGet<double>(this, "loop_icp_max_correspondence_distance", 150.0);
     loopIcpFitnessThreshold = declareAndGet<double>(this, "loop_icp_fitness_threshold", 0.3);
     loopClosureFrequency = declareAndGet<double>(this, "loop_closure_frequency", 1.0);
+    loopMinPathDistance = declareAndGet<double>(this, "loop_min_path_distance", 10.0);
+    loopMaxKeyframeYawRate = declareAndGet<double>(this, "loop_max_keyframe_yaw_rate", 0.7);
     pubLoopScan = declareAndGet<bool>(this, "pub_loop_scan", true);
     pubLoopSubmap = declareAndGet<bool>(this, "pub_loop_submap", true);
 
