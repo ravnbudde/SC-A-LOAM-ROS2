@@ -7,6 +7,7 @@
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <lw_messages/msg/reset_event.hpp>
 
 namespace aloam_velodyne
 {
@@ -21,6 +22,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_laser_cloud_full_res_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_laser_odometry_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr sub_gps_;
+  rclcpp::Subscription<lw_messages::msg::ResetEvent>::SharedPtr sub_reset_event_;
   std::vector<std::thread> worker_threads_;
 };
 

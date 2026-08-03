@@ -39,6 +39,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <lw_messages/msg/reset_event.hpp>
 
 #include <eigen3/Eigen/Dense>
 
@@ -132,6 +133,8 @@ bool laserCloudMapPGORedraw = true;
 
 bool useGPS = true;
 std::atomic_bool pgoRunning{false};
+std::atomic<double> resetCutoffStamp{0.0};
+std::atomic_bool awaitingPostResetBaseline{false};
 bool pubLoopScan = true;
 bool pubLoopSubmap = true;
 // bool useGPS = false;
@@ -284,6 +287,7 @@ void saveOptimizedVerticesKITTIformat(gtsam::Values _estimates, std::string _fil
 
 void laserOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr &_laserOdometry)
 {
+    if (stampToSec(_laserOdometry->header.stamp) <= resetCutoffStamp.load()) return;
 	mBuf.lock();
 	odometryBuf.push(_laserOdometry);
 	mBuf.unlock();
@@ -291,6 +295,7 @@ void laserOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr &_laserO
 
 void laserCloudFullResHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &_laserCloudFullRes)
 {
+    if (stampToSec(_laserCloudFullRes->header.stamp) <= resetCutoffStamp.load()) return;
 	mBuf.lock();
 	fullResBuf.push(_laserCloudFullRes);
 	mBuf.unlock();
@@ -657,6 +662,11 @@ void process_pg()
             // 
             odom_pose_prev = odom_pose_curr;
             odom_pose_curr = pose_curr;
+            if (awaitingPostResetBaseline.exchange(false)) {
+                odom_pose_prev = pose_curr;
+                translationAccumulated = 1000000.0;
+                rotaionAccumulated = 1000000.0;
+            }
             Pose6D dtf = diffTransformation(odom_pose_prev, odom_pose_curr); // dtf means delta_transform
             if (keyframeIntervalStartTime <= 0.0)
                 keyframeIntervalStartTime = timeLaserOdometry;
@@ -984,6 +994,55 @@ void resetPGOState()
     recentOptimizedX = 0.0;
     recentOptimizedY = 0.0;
     edges_str.clear();
+    scManager.clear();
+}
+
+void handleResetEvent(const lw_messages::msg::ResetEvent::ConstSharedPtr event)
+{
+    const double cutoff = rclcpp::Time(event->stamp).seconds();
+    resetCutoffStamp.store(cutoff);
+    awaitingPostResetBaseline.store(true);
+
+    if (event->mode == lw_messages::msg::ResetEvent::CHECKPOINT_RESTORED) {
+        std::lock_guard<std::mutex> lock(mBuf);
+        while (!odometryBuf.empty()) odometryBuf.pop();
+        while (!fullResBuf.empty()) fullResBuf.pop();
+        while (!gpsBuf.empty()) gpsBuf.pop();
+        while (!scLoopICPBuf.empty()) scLoopICPBuf.pop();
+        translationAccumulated = 1000000.0;
+        rotaionAccumulated = 1000000.0;
+        yawAccumulatedSinceKeyframe = 0.0;
+        maxYawRateSinceKeyframe = 0.0;
+        keyframeIntervalStartTime = 0.0;
+        timeLaserOdometryPrev = 0.0;
+        RCLCPP_WARN(rclcpp::get_logger("laserPGO"),
+            "Fast-LIO checkpoint restored at epoch %lu; retained %zu keyframes",
+            event->epoch, keyframePoses.size());
+        return;
+    }
+
+    if (event->mode != lw_messages::msg::ResetEvent::FULL_RESET) return;
+    resetPGOState();
+    ISAM2Params parameters;
+    parameters.relinearizeThreshold = 0.01;
+    parameters.relinearizeSkip = 1;
+    isam = new ISAM2(parameters);
+    std::filesystem::remove_all(pgScansDirectory);
+    std::filesystem::create_directories(pgScansDirectory);
+    std::filesystem::remove_all(pgSCDsDirectory);
+    std::filesystem::create_directories(pgSCDsDirectory);
+
+    nav_msgs::msg::Path empty_path;
+    empty_path.header.stamp = event->stamp;
+    empty_path.header.frame_id = map_frame_id;
+    pubPathAftPGO->publish(empty_path);
+    sensor_msgs::msg::PointCloud2 empty_map;
+    empty_map.header = empty_path.header;
+    empty_map.height = 1;
+    pubMapAftPGO->publish(empty_map);
+    RCLCPP_ERROR(rclcpp::get_logger("laserPGO"),
+        "Full pose-graph/map reset for Fast-LIO epoch %lu: %s",
+        event->epoch, event->reason.c_str());
 }
 
 namespace aloam_velodyne
@@ -1054,6 +1113,8 @@ LaserPGONode::LaserPGONode(const rclcpp::NodeOptions & options)
     sub_laser_cloud_full_res_ = this->create_subscription<sensor_msgs::msg::PointCloud2>("/velodyne_cloud_registered_local", 100, laserCloudFullResHandler);
     sub_laser_odometry_ = this->create_subscription<nav_msgs::msg::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
     sub_gps_ = this->create_subscription<sensor_msgs::msg::NavSatFix>("/gps/fix", 100, gpsHandler);
+    sub_reset_event_ = this->create_subscription<lw_messages::msg::ResetEvent>(
+        "~/reset_event", rclcpp::QoS(1).reliable().transient_local(), handleResetEvent);
 
     pubOdomAftPGO = this->create_publisher<nav_msgs::msg::Odometry>("/aft_pgo_odom", 100);
     pubOdomRepubVerifier = this->create_publisher<nav_msgs::msg::Odometry>("/repub_odom", 100);

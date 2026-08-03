@@ -11,6 +11,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(lw_messages REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -32,6 +33,7 @@ set(ROS_DEPENDENCIES
   rclcpp
   rclcpp_components
   geometry_msgs
+  lw_messages
   nav_msgs
   sensor_msgs
   pcl_conversions

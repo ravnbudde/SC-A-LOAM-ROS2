@@ -102,6 +102,7 @@ public:
     void setSCdistThres(double _new_thres);
     void setMaximumRadius(double _max_r);
     void setNumExcludeRecent(int _num_exclude_recent);
+    void clear();
 
     // data 
     std::vector<double> polarcontexts_timestamp_; // optional.

@@ -263,6 +263,20 @@ void SCManager::makeAndSaveScancontextAndKeys( pcl::PointCloud<SCPointType> & _s
     polarcontext_invkeys_mat_.push_back( polarcontext_invkey_vec );
 } // SCManager::makeAndSaveScancontextAndKeys
 
+void SCManager::clear()
+{
+    polarcontexts_timestamp_.clear();
+    polarcontexts_.clear();
+    polarcontext_invkeys_.clear();
+    polarcontext_vkeys_.clear();
+    polarcontext_invkeys_mat_.clear();
+    polarcontext_invkeys_to_search_.clear();
+    polarcontext_tree_.reset();
+    polarcontext_tree_batch_.reset();
+    is_tree_batch_made = false;
+    tree_making_period_conter = 0;
+}
+
 void SCManager::setSCdistThres(double _new_thres)
 {
     SC_DIST_THRES = _new_thres;

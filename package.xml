@@ -14,6 +14,7 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>geometry_msgs</depend>
+  <depend>lw_messages</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>pcl_conversions</depend>
