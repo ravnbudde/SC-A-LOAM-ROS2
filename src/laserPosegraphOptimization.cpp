@@ -135,6 +135,9 @@ bool useGPS = true;
 std::atomic_bool pgoRunning{false};
 std::atomic<double> resetCutoffStamp{0.0};
 std::atomic_bool awaitingPostResetBaseline{false};
+std::mutex mOdomAlignment;
+gtsam::Pose3 postResetOdomAlignment;
+bool postResetOdomAlignmentActive = false;
 bool pubLoopScan = true;
 bool pubLoopSubmap = true;
 // bool useGPS = false;
@@ -221,6 +224,13 @@ gtsam::Pose3 Pose6DtoGTSAMPose3(const Pose6D& p)
 {
     return gtsam::Pose3( gtsam::Rot3::RzRyRx(p.roll, p.pitch, p.yaw), gtsam::Point3(p.x, p.y, p.z) );
 } // Pose6DtoGTSAMPose3
+
+Pose6D GTSAMPose3ToPose6D(const gtsam::Pose3& pose)
+{
+    return Pose6D{
+        pose.translation().x(), pose.translation().y(), pose.translation().z(),
+        pose.rotation().roll(), pose.rotation().pitch(), pose.rotation().yaw()};
+}
 
 void saveGTSAMgraphG2oFormat(const gtsam::Values& _estimates)
 {
@@ -638,7 +648,7 @@ void process_pg()
             pcl::fromROSMsg(*fullResBuf.front(), *thisKeyFrame);
             fullResBuf.pop();
 
-            Pose6D pose_curr = getOdom(odometryBuf.front());
+            const Pose6D raw_pose_curr = getOdom(odometryBuf.front());
             odometryBuf.pop();
 
             // find nearest gps 
@@ -660,12 +670,32 @@ void process_pg()
             //
             // Early reject by counting local delta movement (for equi-spereated kf drop)
             // 
-            odom_pose_prev = odom_pose_curr;
-            odom_pose_curr = pose_curr;
-            if (awaitingPostResetBaseline.exchange(false)) {
-                odom_pose_prev = pose_curr;
+            Pose6D pose_curr;
+            bool post_reset_baseline = false;
+            {
+                std::lock_guard<std::mutex> lock(mOdomAlignment);
+                post_reset_baseline = awaitingPostResetBaseline.exchange(false);
+                if (post_reset_baseline) {
+                    postResetOdomAlignment =
+                        Pose6DtoGTSAMPose3(odom_pose_curr).compose(
+                            Pose6DtoGTSAMPose3(raw_pose_curr).inverse());
+                    postResetOdomAlignmentActive = true;
+                }
+                pose_curr = postResetOdomAlignmentActive ?
+                    GTSAMPose3ToPose6D(
+                        postResetOdomAlignment.compose(Pose6DtoGTSAMPose3(raw_pose_curr))) :
+                    raw_pose_curr;
+                odom_pose_prev = odom_pose_curr;
+                odom_pose_curr = pose_curr;
+            }
+            if (post_reset_baseline) {
                 translationAccumulated = 1000000.0;
                 rotaionAccumulated = 1000000.0;
+                RCLCPP_WARN(
+                    rclcpp::get_logger("laserPGO"),
+                    "Aligned post-reset Fast-LIO odometry to retained pose graph at "
+                    "(%.3f, %.3f, %.3f)",
+                    pose_curr.x, pose_curr.y, pose_curr.z);
             }
             Pose6D dtf = diffTransformation(odom_pose_prev, odom_pose_curr); // dtf means delta_transform
             if (keyframeIntervalStartTime <= 0.0)
@@ -961,8 +991,13 @@ void resetPGOState()
     maxYawRateSinceKeyframe = 0.0;
     keyframeIntervalStartTime = 0.0;
     isNowKeyFrame = false;
-    odom_pose_prev = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    odom_pose_curr = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    {
+        std::lock_guard<std::mutex> lock_alignment(mOdomAlignment);
+        odom_pose_prev = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        odom_pose_curr = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        postResetOdomAlignment = gtsam::Pose3();
+        postResetOdomAlignmentActive = false;
+    }
     timeLaserOdometry = 0.0;
     timeLaser = 0.0;
     timeLaserOdometryPrev = 0.0;
@@ -1036,9 +1071,10 @@ void handleResetEvent(const lw_messages::msg::ResetEvent::ConstSharedPtr event)
     empty_path.header.stamp = event->stamp;
     empty_path.header.frame_id = map_frame_id;
     pubPathAftPGO->publish(empty_path);
+    pcl::PointCloud<PointType> empty_cloud;
     sensor_msgs::msg::PointCloud2 empty_map;
+    pcl::toROSMsg(empty_cloud, empty_map);
     empty_map.header = empty_path.header;
-    empty_map.height = 1;
     pubMapAftPGO->publish(empty_map);
     RCLCPP_ERROR(rclcpp::get_logger("laserPGO"),
         "Full pose-graph/map reset for Fast-LIO epoch %lu: %s",
